@@ -1,0 +1,133 @@
+import tkinter as tk
+from tkinter import ttk
+from datetime import datetime
+import random
+
+
+# Kill Chain Mapping
+
+def map_stage(attack):
+    mapping = {
+        "port_scan": "Reconnaissance",
+        "brute_force": "Exploitation",
+        "reverse_shell": "Command & Control",
+        "data_exfiltration": "Action on Objectives"
+    }
+    return mapping.get(attack, "Unknown")
+
+
+# Global Variables
+
+running = False
+attack_counts = {
+    "Reconnaissance": 0,
+    "Exploitation": 0,
+    "Command & Control": 0,
+    "Action on Objectives": 0
+}
+
+attacks = list(map_stage.__defaults__ or ["port_scan", "brute_force", "reverse_shell", "data_exfiltration"])
+
+
+# Generate Alert
+
+def generate_alert():
+    if not running:
+        return
+
+    attack = random.choice(["port_scan", "brute_force", "reverse_shell", "data_exfiltration"])
+    stage = map_stage(attack)
+    time = datetime.now().strftime("%H:%M:%S")
+    ip = f"192.168.1.{random.randint(1,255)}"
+
+    tree.insert("", "end", values=(time, ip, attack, stage))
+
+    attack_counts[stage] += 1
+    update_counters()
+
+    root.after(2000, generate_alert)
+
+
+# Update Counter Labels
+
+def update_counters():
+    recon_label.config(text=f"Reconnaissance: {attack_counts['Reconnaissance']}")
+    exploit_label.config(text=f"Exploitation: {attack_counts['Exploitation']}")
+    c2_label.config(text=f"C2: {attack_counts['Command & Control']}")
+    action_label.config(text=f"Action: {attack_counts['Action on Objectives']}")
+
+
+# Start / Stop
+
+def start_monitoring():
+    global running
+    running = True
+    generate_alert()
+
+def stop_monitoring():
+    global running
+    running = False
+
+
+# GUI Setup
+
+root = tk.Tk()
+root.title("Project Swastik - Cyber Kill Chain IDS")
+root.geometry("1000x500")
+root.configure(bg="#1e1e1e")
+
+# Title
+title = tk.Label(root, text="SWASTIK - Kill Chain Intrusion Detection System",
+                 bg="#1e1e1e", fg="white", font=("Arial", 16, "bold"))
+title.pack(pady=10)
+
+# Main Frame
+main_frame = tk.Frame(root, bg="#1e1e1e")
+main_frame.pack(fill="both", expand=True)
+
+# Left Control Panel
+control_frame = tk.Frame(main_frame, bg="#2d2d2d", width=200)
+control_frame.pack(side="left", fill="y", padx=10, pady=10)
+
+start_btn = tk.Button(control_frame, text="Start Monitoring",
+                      bg="green", fg="white", command=start_monitoring)
+start_btn.pack(pady=10, fill="x")
+
+stop_btn = tk.Button(control_frame, text="Stop Monitoring",
+                     bg="red", fg="white", command=stop_monitoring)
+stop_btn.pack(pady=10, fill="x")
+
+# Right Table
+table_frame = tk.Frame(main_frame)
+table_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+
+columns = ("Time", "Source IP", "Attack Type", "Kill Chain Stage")
+tree = ttk.Treeview(table_frame, columns=columns, show="headings")
+
+for col in columns:
+    tree.heading(col, text=col)
+    tree.column(col, width=150)
+
+tree.pack(fill="both", expand=True)
+
+# Bottom Counter Frame
+counter_frame = tk.Frame(root, bg="#1e1e1e")
+counter_frame.pack(pady=10)
+
+recon_label = tk.Label(counter_frame, text="Reconnaissance: 0",
+                       fg="yellow", bg="#1e1e1e")
+recon_label.pack(side="left", padx=10)
+
+exploit_label = tk.Label(counter_frame, text="Exploitation: 0",
+                         fg="orange", bg="#1e1e1e")
+exploit_label.pack(side="left", padx=10)
+
+c2_label = tk.Label(counter_frame, text="C2: 0",
+                    fg="red", bg="#1e1e1e")
+c2_label.pack(side="left", padx=10)
+
+action_label = tk.Label(counter_frame, text="Action: 0",
+                        fg="cyan", bg="#1e1e1e")
+action_label.pack(side="left", padx=10)
+
+root.mainloop()
