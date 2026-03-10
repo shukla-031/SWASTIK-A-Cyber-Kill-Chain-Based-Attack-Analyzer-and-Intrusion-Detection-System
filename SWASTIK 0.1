@@ -1,108 +1,336 @@
+
 import tkinter as tk
 from tkinter import ttk
 from datetime import datetime
-import random
+import threading
+import socket
+from collections import defaultdict
+from scapy.all import sniff, IP, TCP, UDP
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import psutil
 
 
-# Kill Chain Mapping
-
-def map_stage(attack):
-    mapping = {
-        "port_scan": "Reconnaissance",
-        "brute_force": "Exploitation",
-        "reverse_shell": "Command & Control",
-        "data_exfiltration": "Action on Objectives"
-    }
-    return mapping.get(attack, "Unknown")
-
-
-# Global Variables
+# GLOBAL VARIABLES
 
 running = False
-attack_counts = {
-    "Reconnaissance": 0,
-    "Exploitation": 0,
-    "Command & Control": 0,
-    "Action on Objectives": 0
+packet_count = 0
+LOCAL_IP = socket.gethostbyname(socket.gethostname())
+
+ATTACK_MAPPING = {
+    "Port Scan": ("Reconnaissance", "Low"),
+    "Brute Force": ("Exploitation", "Medium"),
+    "Reverse Shell": ("Command & Control", "High"),
+    "Data Exfiltration": ("Action on Objectives", "Critical")
 }
 
-attacks = list(map_stage.__defaults__ or ["port_scan", "brute_force", "reverse_shell", "data_exfiltration"])
+attack_counts = defaultdict(int)
+connection_tracker = defaultdict(int)
+reverse_tracker = defaultdict(int)
 
+SUSPICIOUS_PORTS = [4444, 5555, 1337, 9001]
 
-# Generate Alert
+# =========================
+# COLORS
+# =========================
+COLORS = {
+    'bg_dark': '#0a0e1a',
+    'bg_medium': '#1a1f2f',
+    'bg_light': '#2a2f3f',
+    'success': '#00cc88',
+    'warning': '#ffaa00',
+    'danger': '#ff4444'
+}
 
-def generate_alert():
+# =========================
+# NETWORK INTERFACES
+# =========================
+def get_interfaces():
+    return list(psutil.net_if_addrs().keys())
+
+# =========================
+# GRAPH
+# =========================
+def show_graph():
+
+    if sum(attack_counts.values()) == 0:
+        return
+
+    graph_window = tk.Toplevel(root)
+    graph_window.title("Attack Distribution")
+    graph_window.geometry("700x400")
+
+    stages = list(attack_counts.keys())
+    values = list(attack_counts.values())
+
+    fig, ax = plt.subplots()
+    ax.bar(stages, values)
+
+    ax.set_title("Attack Distribution by Kill Chain Stage")
+    ax.set_xlabel("Stage")
+    ax.set_ylabel("Alerts")
+
+    canvas = FigureCanvasTkAgg(fig, graph_window)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+# =========================
+# DETECTION LOGIC
+# =========================
+def detect_attack(packet):
+
+    global packet_count
+
     if not running:
         return
 
-    attack = random.choice(["port_scan", "brute_force", "reverse_shell", "data_exfiltration"])
-    stage = map_stage(attack)
-    time = datetime.now().strftime("%H:%M:%S")
-    ip = f"192.168.1.{random.randint(1,255)}"
+    if IP not in packet:
+        return
 
-    tree.insert("", "end", values=(time, ip, attack, stage))
+    packet_count += 1
+    status_var.set(f"Packets Captured: {packet_count}")
 
-    attack_counts[stage] += 1
+    src_ip = packet[IP].src
+
+    attack_type = None
+
+    # PORT SCAN
+    if TCP in packet and packet[TCP].flags & 0x02:
+        connection_tracker[src_ip] += 1
+        if connection_tracker[src_ip] > 25:
+            attack_type = "Port Scan"
+
+    # BRUTE FORCE
+    if TCP in packet and packet[TCP].dport in [21, 22, 3389]:
+        connection_tracker[(src_ip, packet[TCP].dport)] += 1
+        if connection_tracker[(src_ip, packet[TCP].dport)] > 15:
+            attack_type = "Brute Force"
+
+    # REVERSE SHELL
+    if TCP in packet and packet[TCP].dport in SUSPICIOUS_PORTS:
+        reverse_tracker[src_ip] += 1
+        if reverse_tracker[src_ip] > 3:
+            attack_type = "Reverse Shell"
+
+    # DATA EXFILTRATION
+    if UDP in packet and len(packet) > 1400:
+        attack_type = "Data Exfiltration"
+
+    if attack_type is None:
+        attack_type = "Normal Traffic"
+        stage = "Normal"
+        severity = "Low"
+    else:
+        stage, severity = ATTACK_MAPPING[attack_type]
+
+    root.after(0, log_alert, src_ip, attack_type, stage, severity)
+
+# =========================
+# ALERT LOGGER
+# =========================
+def log_alert(ip, attack, stage, severity):
+
+    time_now = datetime.now().strftime("%H:%M:%S")
+
+    tree.insert("", "end",
+        values=(time_now, ip, attack, stage, severity),
+        tags=(severity,)
+    )
+
+    if stage != "Normal":
+        attack_counts[stage] += 1
+
     update_counters()
 
-    root.after(2000, generate_alert)
+# =========================
+# SNIFFING
+# =========================
+def sniff_packets():
 
+    interface = interface_var.get()
 
-# Update Counter Labels
+    try:
+        sniff(
+            iface=interface,
+            prn=detect_attack,
+            store=False
+        )
+    except Exception as e:
+        status_var.set(str(e))
 
-def update_counters():
-    recon_label.config(text=f"Reconnaissance: {attack_counts['Reconnaissance']}")
-    exploit_label.config(text=f"Exploitation: {attack_counts['Exploitation']}")
-    c2_label.config(text=f"C2: {attack_counts['Command & Control']}")
-    action_label.config(text=f"Action: {attack_counts['Action on Objectives']}")
-
-
-# Start / Stop
-
+# =========================
+# START
+# =========================
 def start_monitoring():
-    global running
-    running = True
-    generate_alert()
 
+    global running
+
+    if running:
+        return
+
+    running = True
+
+    threading.Thread(
+        target=sniff_packets,
+        daemon=True
+    ).start()
+
+    status_var.set("Monitoring Started")
+
+    start_btn.config(state=tk.DISABLED)
+    stop_btn.config(state=tk.NORMAL)
+
+# =========================
+# STOP
+# =========================
 def stop_monitoring():
+
     global running
     running = False
 
+    status_var.set("Monitoring Stopped")
 
-# GUI Setup
+    start_btn.config(state=tk.NORMAL)
+    stop_btn.config(state=tk.DISABLED)
 
+    show_graph()
+
+# =========================
+# CLEAR
+# =========================
+def clear_table():
+
+    for item in tree.get_children():
+        tree.delete(item)
+
+    attack_counts.clear()
+    connection_tracker.clear()
+    reverse_tracker.clear()
+
+    update_counters()
+
+# =========================
+# COUNTERS
+# =========================
+def update_counters():
+
+    recon_label.config(text=f"Recon: {attack_counts['Reconnaissance']}")
+    exploit_label.config(text=f"Exploit: {attack_counts['Exploitation']}")
+    c2_label.config(text=f"C2: {attack_counts['Command & Control']}")
+    action_label.config(text=f"Action: {attack_counts['Action on Objectives']}")
+
+# =========================
+# SYSTEM STATS
+# =========================
+def update_system_stats():
+
+    cpu = psutil.cpu_percent()
+    net = psutil.net_io_counters()
+
+    system_info.config(
+        text=f"Local IP: {LOCAL_IP}\nCPU: {cpu}%\nSent: {net.bytes_sent}\nRecv: {net.bytes_recv}"
+    )
+
+    root.after(2000, update_system_stats)
+
+# =========================
+# GUI
+# =========================
 root = tk.Tk()
-root.title("Project Swastik - Cyber Kill Chain IDS")
-root.geometry("1000x500")
-root.configure(bg="#1e1e1e")
+root.title("SWASTIK Kill Chain IDS")
+root.geometry("1200x650")
+root.configure(bg=COLORS['bg_dark'])
 
-# Title
-title = tk.Label(root, text="SWASTIK - Kill Chain Intrusion Detection System",
-                 bg="#1e1e1e", fg="white", font=("Arial", 16, "bold"))
-title.pack(pady=10)
+main_frame = tk.Frame(root, bg=COLORS['bg_dark'])
+main_frame.pack(fill="both", expand=True, padx=20, pady=20)
 
-# Main Frame
-main_frame = tk.Frame(root, bg="#1e1e1e")
-main_frame.pack(fill="both", expand=True)
+left_panel = tk.Frame(main_frame, bg=COLORS['bg_medium'], width=250)
+left_panel.pack(side="left", fill="y")
 
-# Left Control Panel
-control_frame = tk.Frame(main_frame, bg="#2d2d2d", width=200)
-control_frame.pack(side="left", fill="y", padx=10, pady=10)
+right_panel = tk.Frame(main_frame, bg=COLORS['bg_dark'])
+right_panel.pack(side="right", fill="both", expand=True)
 
-start_btn = tk.Button(control_frame, text="Start Monitoring",
-                      bg="green", fg="white", command=start_monitoring)
-start_btn.pack(pady=10, fill="x")
+# =========================
+# INTERFACE SELECT
+# =========================
+tk.Label(left_panel, text="Network Interface",
+bg=COLORS['bg_medium'], fg="white").pack(pady=10)
 
-stop_btn = tk.Button(control_frame, text="Stop Monitoring",
-                     bg="red", fg="white", command=stop_monitoring)
-stop_btn.pack(pady=10, fill="x")
+interface_var = tk.StringVar()
 
-# Right Table
-table_frame = tk.Frame(main_frame)
-table_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+interfaces = get_interfaces()
 
-columns = ("Time", "Source IP", "Attack Type", "Kill Chain Stage")
-tree = ttk.Treeview(table_frame, columns=columns, show="headings")
+interface_dropdown = ttk.Combobox(
+    left_panel,
+    textvariable=interface_var,
+    values=interfaces,
+    state="readonly"
+)
+
+interface_dropdown.pack(pady=5)
+
+if interfaces:
+    interface_dropdown.current(0)
+
+# =========================
+# BUTTONS
+# =========================
+start_btn = tk.Button(
+    left_panel,
+    text="START",
+    command=start_monitoring,
+    bg=COLORS['success']
+)
+
+start_btn.pack(fill="x", pady=10, padx=10)
+
+stop_btn = tk.Button(
+    left_panel,
+    text="STOP",
+    command=stop_monitoring,
+    bg=COLORS['danger'],
+    state=tk.DISABLED
+)
+
+stop_btn.pack(fill="x", pady=5, padx=10)
+
+clear_btn = tk.Button(
+    left_panel,
+    text="CLEAR",
+    command=clear_table,
+    bg=COLORS['warning']
+)
+
+clear_btn.pack(fill="x", pady=5, padx=10)
+
+# =========================
+# STATS
+# =========================
+recon_label = tk.Label(left_panel, text="Recon:0", bg=COLORS['bg_medium'], fg="white")
+recon_label.pack(pady=5)
+
+exploit_label = tk.Label(left_panel, text="Exploit:0", bg=COLORS['bg_medium'], fg="white")
+exploit_label.pack(pady=5)
+
+c2_label = tk.Label(left_panel, text="C2:0", bg=COLORS['bg_medium'], fg="white")
+c2_label.pack(pady=5)
+
+action_label = tk.Label(left_panel, text="Action:0", bg=COLORS['bg_medium'], fg="white")
+action_label.pack(pady=5)
+
+system_info = tk.Label(left_panel, bg=COLORS['bg_medium'], fg="white")
+system_info.pack(side="bottom", pady=10)
+
+# =========================
+# TABLE
+# =========================
+columns = ("Time", "Source IP", "Attack", "Stage", "Severity")
+
+tree = ttk.Treeview(
+    right_panel,
+    columns=columns,
+    show="headings"
+)
 
 for col in columns:
     tree.heading(col, text=col)
@@ -110,24 +338,30 @@ for col in columns:
 
 tree.pack(fill="both", expand=True)
 
-# Bottom Counter Frame
-counter_frame = tk.Frame(root, bg="#1e1e1e")
-counter_frame.pack(pady=10)
+tree.tag_configure("Low", background="#1a472a", foreground="white")
+tree.tag_configure("Medium", background="#ff8c00")
+tree.tag_configure("High", background="#d32f2f", foreground="white")
+tree.tag_configure("Critical", background="#8b0000", foreground="white")
 
-recon_label = tk.Label(counter_frame, text="Reconnaissance: 0",
-                       fg="yellow", bg="#1e1e1e")
-recon_label.pack(side="left", padx=10)
+# =========================
+# STATUS BAR
+# =========================
+status_var = tk.StringVar()
+status_var.set("Ready")
 
-exploit_label = tk.Label(counter_frame, text="Exploitation: 0",
-                         fg="orange", bg="#1e1e1e")
-exploit_label.pack(side="left", padx=10)
+status = tk.Label(
+    root,
+    textvariable=status_var,
+    bg=COLORS['bg_medium'],
+    fg="white"
+)
 
-c2_label = tk.Label(counter_frame, text="C2: 0",
-                    fg="red", bg="#1e1e1e")
-c2_label.pack(side="left", padx=10)
+status.pack(fill="x")
 
-action_label = tk.Label(counter_frame, text="Action: 0",
-                        fg="cyan", bg="#1e1e1e")
-action_label.pack(side="left", padx=10)
+# =========================
+# START BACKGROUND TASKS
+# =========================
+update_counters()
+update_system_stats()
 
 root.mainloop()
